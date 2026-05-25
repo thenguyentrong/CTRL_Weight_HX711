@@ -38,7 +38,8 @@ Type the letter and press Enter:
 |-----|--------|
 | `h` | help |
 | `t` | tare (zero) — platform must be empty |
-| `c` | calibrate with a known weight on the platform |
+| `c` | simple calibrate — one known weight in the middle (all cells share one factor) |
+| `k` | **corner calibrate** — zero, then put the weight on each corner; solves each cell's factor (more accurate, position-independent) |
 | `n` | noise test — shows how shaky each sensor is (find the bad cell) |
 | `i` | identify — press a corner, it tells you the sensor number (S1–S4) |
 | `a` | auto-zero tracking ON/OFF |
@@ -49,8 +50,15 @@ Type the letter and press Enter:
 
 Tare + calibration are stored in **EEPROM**, so they survive a reset (good for 24/7 use).
 
-Calibration uses one **systemFactor** (counts/kg of the summed signal): put a known
-weight on the platform, type its kg — works for "stand on it to calibrate".
+### Corner calibration (`k`) — the accurate one
+Each cell has its own factor (`kgPerCount[i]`), so total weight = `Σ net_i × factor_i`.
+That sum equals the true load **at any position** (statics: the 4 support forces add up
+to the total). The `k` flow: enter the test weight → zero (empty) → place the weight over
+**each corner** in turn, pressing a key to advance. It reads all 4 cells at each corner
+(force leaks into neighbours, so it must) and solves the 4×4 system for each cell's factor.
+
+Needs all 4 cells **repeatable** first — calibration sets counts→kg, it cannot fix a
+cell whose reading jumps around.
 
 ## Drift fighting (software)
 The firmware applies, in order:

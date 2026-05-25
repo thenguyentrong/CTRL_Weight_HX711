@@ -1,23 +1,22 @@
 /*
- * CTRL_Weight_HX711  -  4x load cell scale (event-driven)
+ * CTRL_Weight_HX711  -  4x load cell scale (event-driven, per-cell calibration)
  * ==================================================================
  * Hardware: Arduino UNO + 4x HX711 + 4x 5-wire FULL-BRIDGE load cell.
- *
- * WIRING (separate SCK per module):
  *   S1: DT->D4 SCK->D3 | S2: DT->D5 SCK->D8 | S3: DT->D6 SCK->D9 | S4: DT->D7 SCK->D10
  *   All HX711 VCC->5V, GND->GND (common). Cell: Red=E+ Black=E- Green=A+ White=A- Yellow=shield->GND
  *
- * BEHAVIOUR (this is the normal "scale" mode):
- *   - On power-up it zeroes itself (keep the platform EMPTY at startup).
- *   - While empty it stays SILENT and auto-holds zero.
- *   - When something is placed on it, once the reading settles it prints ONE line:
- *         Weight: 7.52 kg
- *   - When removed it prints  "Cleared -> 0.00 kg. Ready."  and goes quiet again.
+ * SCALE BEHAVIOUR: auto-zeros at startup (keep empty), stays silent while empty,
+ *   prints one "Weight: X kg" line when a load settles, "Cleared" when removed.
+ *
+ * CALIBRATION:
+ *   c = simple  (one known weight in the middle -> all cells share one factor)
+ *   k = CORNER  (zero, then put the weight over each corner in turn; it solves
+ *               each cell's true factor -> accurate at any position). More accurate.
  *
  * SERIAL: 57600 baud, line ending "Newline".
  * COMMANDS:
- *   h help | t tare(zero) | c calibrate | n noise test | i identify corner
- *   a auto-zero on/off | d DEBUG stream on/off (raw per-cell) | p print | s save | e erase
+ *   h help | t tare | c calibrate(simple) | k corner-calibrate | n noise | i identify
+ *   a auto-zero on/off | d DEBUG stream on/off | p print | s save | e erase
  * ==================================================================
  */
 
@@ -29,30 +28,29 @@ const byte SCK_PINS[NUM] = {3, 8, 9, 10};
 
 struct CalData {
   uint32_t magic;
-  long     offset[NUM];
-  float    systemFactor;   // counts per KG for the SUM of all cells
+  long     offset[NUM];      // tare per cell (counts)
+  float    kgPerCount[NUM];  // per-cell factor: kg per count
 };
-const uint32_t MAGIC  = 0x48583735;  // "HX75"
+const uint32_t MAGIC  = 0x48583736;  // "HX76" (per-cell cal)
 const int      EE_ADDR = 0;
 CalData cal;
 
 // ---- tuning ----
-const byte  MED_N       = 5;       // samples per cell per reading (median)
-const long  SPIKE_LIMIT = 200000;  // reject 1-step jump bigger than this (~10 kg)
-const float EMA_A       = 0.30;    // smoothing
-const long  AZ_BAND     = 8000;    // near-zero band per cell for auto-zero (~0.4 kg)
-const long  STAB_BAND   = 4000;    // stability window on total (~0.2 kg)
-const byte  STAB_NEEDED = 6;       // consecutive stable reads to "settle"
-const float AZ_GAIN     = 0.10;    // how fast the zero is pulled back
-
-const float ONSET_KG    = 3.0;     // something placed if total exceeds this
-const float CLEAR_KG    = 1.0;     // considered removed/empty below this
-const float RECHECK_KG  = 2.0;     // re-measure if load changes this much after report
-const unsigned long WEIGH_TIMEOUT = 8000; // report anyway if not settled in this time
+const byte  MED_N       = 5;
+const long  SPIKE_LIMIT = 200000;
+const float EMA_A       = 0.30;
+const long  AZ_BAND     = 8000;
+const long  STAB_BAND   = 4000;
+const byte  STAB_NEEDED = 6;
+const float AZ_GAIN     = 0.10;
+const float ONSET_KG    = 3.0;
+const float CLEAR_KG    = 1.0;
+const float RECHECK_KG  = 2.0;
+const unsigned long WEIGH_TIMEOUT = 8000;
 
 // ---- runtime ----
-bool  debugStream = false;         // 'd' -> verbose per-cell stream (for debugging)
-bool  azOn        = true;          // auto-zero tracking
+bool  debugStream = false;
+bool  azOn        = true;
 float azDrift[NUM] = {0,0,0,0};
 float fNet[NUM]    = {0,0,0,0};
 bool  emaInit  = false;
@@ -79,8 +77,6 @@ void setup() {
   Serial.println(F("=== CTRL_Weight_HX711 ==="));
   loadEEPROM();
   printHelp();
-
-  // auto-zero at startup (platform must be empty)
   Serial.println(F("Starting - keep platform EMPTY..."));
   delay(1500);
   long o[NUM];
@@ -110,9 +106,10 @@ void loop() {
   else stableCount = 0;
   fTotal = total;
   bool stable = stableCount >= STAB_NEEDED;
-  float totalKg = (cal.systemFactor != 0) ? total / cal.systemFactor : 0;
 
-  // ---- DEBUG stream mode (only if you turn it on with 'd') ----
+  float totalKg = 0;
+  for (byte i = 0; i < NUM; i++) totalKg += fNet[i] * cal.kgPerCount[i];
+
   if (debugStream) {
     for (byte i = 0; i < NUM; i++) { Serial.print(F("S")); Serial.print(i + 1); Serial.print('='); Serial.print((long)fNet[i]); Serial.print(' '); }
     Serial.print(F("| ")); Serial.print(totalKg, 3); Serial.print(F(" kg"));
@@ -122,7 +119,6 @@ void loop() {
     return;
   }
 
-  // ---- normal SCALE mode (quiet, event-driven) ----
   bool nearZero = true;
   for (byte i = 0; i < NUM; i++) if (fabs(netRaw[i] - azDrift[i]) > AZ_BAND) nearZero = false;
 
@@ -132,27 +128,20 @@ void loop() {
         for (byte i = 0; i < NUM; i++) azDrift[i] += AZ_GAIN * (netRaw[i] - azDrift[i]);
       if (totalKg > ONSET_KG) { scaleState = S_WEIGH; stableCount = 0; weighStart = millis(); }
       break;
-
     case S_WEIGH:
       if (stable || millis() - weighStart > WEIGH_TIMEOUT) {
         reportedKg = totalKg;
         Serial.print(F("Weight: "));
         if (!stable) Serial.print('~');
-        Serial.print(totalKg, 2);
-        Serial.print(F(" kg"));
+        Serial.print(totalKg, 2); Serial.print(F(" kg"));
         if (!stable) Serial.print(F("  (still moving)"));
         Serial.println();
         scaleState = S_DONE;
       }
       break;
-
     case S_DONE:
-      if (totalKg < CLEAR_KG) {
-        Serial.println(F("Cleared -> 0.00 kg. Ready."));
-        scaleState = S_READY; stableCount = 0;
-      } else if (fabs(totalKg - reportedKg) > RECHECK_KG) {
-        scaleState = S_WEIGH; stableCount = 0; weighStart = millis();
-      }
+      if (totalKg < CLEAR_KG) { Serial.println(F("Cleared -> 0.00 kg. Ready.")); scaleState = S_READY; stableCount = 0; }
+      else if (fabs(totalKg - reportedKg) > RECHECK_KG) { scaleState = S_WEIGH; stableCount = 0; weighStart = millis(); }
       break;
   }
   delay(120);
@@ -231,13 +220,11 @@ void handleSerial() {
   if (c == '\n' || c == '\r' || c == ' ') return;
   switch (tolower(c)) {
     case 'h': case '?': printHelp(); break;
-    case 'd': debugStream = !debugStream;
-              Serial.print(F("Debug stream ")); Serial.println(debugStream ? F("ON") : F("OFF"));
-              emaInit = false; break;
-    case 'a': azOn = !azOn;
-              Serial.print(F("Auto-zero ")); Serial.println(azOn ? F("ON") : F("OFF")); break;
+    case 'd': debugStream = !debugStream; Serial.print(F("Debug stream ")); Serial.println(debugStream ? F("ON") : F("OFF")); emaInit = false; break;
+    case 'a': azOn = !azOn; Serial.print(F("Auto-zero ")); Serial.println(azOn ? F("ON") : F("OFF")); break;
     case 't': doTare(); break;
     case 'c': doCalibrate(); break;
+    case 'k': doCornerCalibrate(); break;
     case 'n': doNoiseTest(); break;
     case 'i': doIdentify(); break;
     case 'p': printCal(); break;
@@ -253,6 +240,15 @@ void resetRuntime() {
   scaleState = S_READY; reportedKg = 0;
 }
 
+// wait for the user to press a key + Enter (returns false on timeout)
+bool waitKey(unsigned long timeoutMs) {
+  while (Serial.available()) Serial.read();
+  unsigned long t0 = millis();
+  while (!Serial.available()) { if (millis() - t0 > timeoutMs) return false; }
+  while (Serial.available()) Serial.read();
+  return true;
+}
+
 void doTare() {
   Serial.println(F("TARE: keep platform EMPTY and still..."));
   delay(1500);
@@ -265,30 +261,87 @@ void doTare() {
   } else Serial.println(F("Tare FAILED - sensor not responding."));
 }
 
+// Simple: one weight in the middle -> all cells share one factor.
 void doCalibrate() {
-  Serial.println(F("CALIBRATE:"));
-  Serial.println(F("  1) Tare first (empty)."));
-  Serial.println(F("  2) Put a KNOWN weight on the platform."));
-  Serial.println(F("  3) Type its weight in kg (e.g. 7.5) and Enter."));
+  Serial.println(F("SIMPLE CALIBRATE (weight in the middle):"));
   Serial.print  (F("  weight kg> "));
   float knownKg = readSerialFloat();
   if (knownKg <= 0) { Serial.println(F("\nCancelled.")); return; }
   Serial.print(knownKg, 3); Serial.println(F(" kg"));
   Serial.println(F("Reading..."));
   long raw[NUM];
-  if (!readAvgAll(20, raw)) { Serial.println(F("Calibration FAILED - read error.")); return; }
+  if (!readAvgAll(20, raw)) { Serial.println(F("FAILED - read error.")); return; }
   long netSum = 0;
   for (byte i = 0; i < NUM; i++) netSum += (raw[i] - cal.offset[i]);
-  Serial.print(F("Per-cell net: "));
-  for (byte i = 0; i < NUM; i++) { Serial.print(F("S")); Serial.print(i + 1); Serial.print('='); Serial.print(raw[i] - cal.offset[i]); Serial.print(' '); }
-  Serial.println();
   if (netSum == 0) { Serial.println(F("No weight detected.")); return; }
-  if (netSum < 0)  Serial.println(F("NOTE: total net NEGATIVE -> a cell may be reversed."));
-  cal.systemFactor = (float)netSum / knownKg;
-  Serial.print(F("New systemFactor (counts/kg) = ")); Serial.println(cal.systemFactor, 2);
+  float f = knownKg / (float)netSum;     // kg per count, same for all cells
+  for (byte i = 0; i < NUM; i++) cal.kgPerCount[i] = f;
   saveEEPROM();
   resetRuntime();
-  Serial.println(F("Remove weight - should go to ~0. Ready."));
+  Serial.println(F("Done. Remove weight -> should go to ~0."));
+  printCal();
+}
+
+// Corner calibration: zero, then weight over each corner -> solve each cell's factor.
+void doCornerCalibrate() {
+  Serial.println(F("=== CORNER CALIBRATION ==="));
+  Serial.print  (F("Test weight in kg> "));
+  float W = readSerialFloat();
+  if (W <= 0) { Serial.println(F("\nCancelled.")); return; }
+  Serial.print(W, 3); Serial.println(F(" kg"));
+
+  Serial.println(F("Remove ALL weight, then press any key + Enter to ZERO..."));
+  if (!waitKey(60000)) { Serial.println(F("timeout - cancelled.")); return; }
+  long o[NUM];
+  if (!readAvgAll(25, o)) { Serial.println(F("read fail.")); return; }
+  for (byte i = 0; i < NUM; i++) cal.offset[i] = o[i];
+  Serial.println(F("Zeroed."));
+
+  float N[NUM][NUM];     // N[corner][cell] = net of that cell with weight on that corner
+  for (byte k = 0; k < NUM; k++) {
+    Serial.print(F("Put the weight on CORNER S")); Serial.print(k + 1);
+    Serial.println(F(" (right over that sensor), then press any key + Enter..."));
+    if (!waitKey(120000)) { Serial.println(F("timeout - cancelled.")); return; }
+    long r[NUM];
+    if (!readAvgAll(25, r)) { Serial.println(F("read fail.")); return; }
+    Serial.print(F("  net: "));
+    for (byte j = 0; j < NUM; j++) { N[k][j] = (float)(r[j] - cal.offset[j]); Serial.print(F("S")); Serial.print(j + 1); Serial.print('='); Serial.print((long)N[k][j]); Serial.print(' '); }
+    Serial.println();
+  }
+
+  // Solve N * x = W  (x = kg per count for each cell)
+  float b[NUM]; for (byte i = 0; i < NUM; i++) b[i] = W;
+  float x[NUM];
+  if (!solve4(N, b, x)) {
+    Serial.println(F("SOLVE FAILED (a cell barely moved / not responding)."));
+    Serial.println(F("Calibration not changed."));
+    return;
+  }
+  for (byte i = 0; i < NUM; i++) cal.kgPerCount[i] = x[i];
+  saveEEPROM();
+  resetRuntime();
+  Serial.println(F("Corner calibration done!"));
+  printCal();
+  Serial.println(F("Now it should read the same at any position."));
+}
+
+// Gauss-Jordan solve of a 4x4 system A x = b. Returns false if singular.
+bool solve4(float A[NUM][NUM], float b[NUM], float x[NUM]) {
+  float M[NUM][NUM + 1];
+  for (byte i = 0; i < NUM; i++) { for (byte j = 0; j < NUM; j++) M[i][j] = A[i][j]; M[i][NUM] = b[i]; }
+  for (byte col = 0; col < NUM; col++) {
+    byte piv = col; float best = fabs(M[col][col]);
+    for (byte r = col + 1; r < NUM; r++) if (fabs(M[r][col]) > best) { best = fabs(M[r][col]); piv = r; }
+    if (best < 1e-3) return false;             // singular / cell not responding
+    if (piv != col) for (byte j = 0; j <= NUM; j++) { float t = M[piv][j]; M[piv][j] = M[col][j]; M[col][j] = t; }
+    for (byte r = 0; r < NUM; r++) {
+      if (r == col) continue;
+      float f = M[r][col] / M[col][col];
+      for (byte j = 0; j <= NUM; j++) M[r][j] -= f * M[col][j];
+    }
+  }
+  for (byte i = 0; i < NUM; i++) x[i] = M[i][NUM] / M[i][i];
+  return true;
 }
 
 void doNoiseTest() {
@@ -308,7 +361,7 @@ void doNoiseTest() {
   if (got == 0) { Serial.println(F("NO DATA - check wiring.")); return; }
   for (byte i = 0; i < NUM; i++) {
     long pp = mx[i] - mn[i];
-    float ppkg = (cal.systemFactor != 0) ? pp / cal.systemFactor : 0;
+    float ppkg = pp * cal.kgPerCount[i]; if (ppkg < 0) ppkg = -ppkg;
     Serial.print(F("S")); Serial.print(i + 1);
     Serial.print(F(" avg=")); Serial.print(sum[i] / got);
     Serial.print(F(" p2p=")); Serial.print(pp);
@@ -355,8 +408,7 @@ float readSerialFloat() {
 // ------------------------------------------------------------- EEPROM
 void setDefaults() {
   cal.magic = MAGIC;
-  for (byte i = 0; i < NUM; i++) cal.offset[i] = 0;
-  cal.systemFactor = 20189.4;
+  for (byte i = 0; i < NUM; i++) { cal.offset[i] = 0; cal.kgPerCount[i] = 1.0 / 20189.4; }
 }
 void loadEEPROM() {
   CalData tmp; EEPROM.get(EE_ADDR, tmp);
@@ -367,11 +419,15 @@ void saveEEPROM() { cal.magic = MAGIC; EEPROM.put(EE_ADDR, cal); Serial.println(
 
 void printCal() {
   Serial.println(F("---- calibration ----"));
-  for (byte i = 0; i < NUM; i++) { Serial.print(F("  S")); Serial.print(i + 1); Serial.print(F(" offset=")); Serial.println(cal.offset[i]); }
-  Serial.print(F("  systemFactor (counts/kg) = ")); Serial.println(cal.systemFactor, 2);
+  for (byte i = 0; i < NUM; i++) {
+    Serial.print(F("  S")); Serial.print(i + 1);
+    Serial.print(F(" offset=")); Serial.print(cal.offset[i]);
+    Serial.print(F("  counts/kg="));
+    Serial.println(cal.kgPerCount[i] != 0 ? (long)(1.0 / cal.kgPerCount[i]) : 0L);
+  }
   Serial.print(F("  auto-zero: ")); Serial.println(azOn ? F("ON") : F("OFF"));
   Serial.println(F("---------------------"));
 }
 void printHelp() {
-  Serial.println(F("Cmds: h help | t tare | c calibrate | n noise | i identify | a auto-zero | d debug-stream | p print | s save | e erase"));
+  Serial.println(F("Cmds: h | t tare | c calib(mid) | k corner-calib | n noise | i identify | a auto-zero | d debug | p print | s save | e erase"));
 }
