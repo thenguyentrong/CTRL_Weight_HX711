@@ -17,12 +17,32 @@ Goal: a stable 24/7 weight readout in kg.
 | S4     | D7     | D10     |
 
 - All HX711 `VCC` -> 5V, all `GND` -> common GND
-- Each load cell -> HX711: `Red=E+`, `Black=E-`, `Green=A+`, `White=A-`
+- Each load cell (5-wire **full bridge**) -> HX711:
+  `Red=E+`, `Black=E-`, `Green=A+`, `White=A-`, `Yellow=Shield -> GND`
 
-Serial Monitor: **57600 baud**.
+Serial Monitor: **57600 baud**, line ending **Newline**.
+
+## Serial commands
+Type the letter and press Enter:
+
+| Key | Action |
+|-----|--------|
+| `h` | help |
+| `d` | live readings ON/OFF |
+| `t` | tare (zero) — platform must be empty |
+| `c` | calibrate with a known weight on the platform |
+| `n` | noise test — shows how shaky each sensor is (find the bad cell) |
+| `p` | print current calibration & offsets |
+| `s` | save to EEPROM |
+| `e` | erase EEPROM (back to defaults) |
+
+Tare + calibration are stored in **EEPROM**, so they survive a reset (good for 24/7 use).
+
+Calibration uses one **systemFactor** (counts/kg of the summed signal): put a known
+weight on the platform, type its kg — works for "stand on it to calibrate".
 
 ## Status / known issues
-- Drift to negative after tare (creep / thermal / settling).
+- Load cells confirmed **5-wire full bridge** → one HX711 per cell is correct.
+- Drift to negative after tare (creep / thermal / settling) — tare only when empty & settled.
 - Wide fluctuation concentrated on **S1** and **S4** (suspect wiring / HX711 / mounting).
-- Open question: are the load cells **half-bridge (3 wire)** or **full-bridge (4 wire)**?
-  Half-bridge cells must be combined into ONE full bridge feeding ONE HX711.
+  Use the `n` noise test to confirm which cell is bad, then swap modules to isolate.
