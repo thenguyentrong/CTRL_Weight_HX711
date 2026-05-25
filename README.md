@@ -33,6 +33,7 @@ Type the letter and press Enter:
 | `c` | calibrate with a known weight on the platform |
 | `n` | noise test — shows how shaky each sensor is (find the bad cell) |
 | `i` | identify — press a corner, it tells you the sensor number (S1–S4) |
+| `a` | auto-zero tracking ON/OFF |
 | `p` | print current calibration & offsets |
 | `s` | save to EEPROM |
 | `e` | erase EEPROM (back to defaults) |
@@ -41,6 +42,18 @@ Tare + calibration are stored in **EEPROM**, so they survive a reset (good for 2
 
 Calibration uses one **systemFactor** (counts/kg of the summed signal): put a known
 weight on the platform, type its kg — works for "stand on it to calibrate".
+
+## Drift fighting (software)
+The firmware applies, in order:
+- **Median** of several samples per cell → rejects wild single-sample spikes
+- **Spike clamp** → ignores physically impossible one-step jumps
+- **Auto-Zero Tracking (AZT)** → when the platform is empty **and** still, it slowly
+  pulls each cell's zero back to 0 (the scale version of IMU complementary filtering —
+  it corrects against the "empty = 0" reference). Toggle with `a`.
+- **Stability lock** → shows `[STABLE]` once the reading settles.
+
+Limitation: AZT only corrects drift while empty/known. A cell that drifts kg's **while
+loaded** is a hardware fault (re-solder S1/S2 off the breadboard, clean 5V, common GND).
 
 ## Status / known issues
 - Load cells confirmed **5-wire full bridge** → one HX711 per cell is correct.
