@@ -22,18 +22,27 @@ Goal: a stable 24/7 weight readout in kg.
 
 Serial Monitor: **57600 baud**, line ending **Newline**.
 
+## Behaviour (normal scale mode)
+Event-driven — it does **not** stream numbers:
+- On power-up it **auto-zeros** (keep the platform empty at startup).
+- While empty it stays **silent** and auto-holds zero.
+- Place something on it → once it settles it prints **one** line: `Weight: 7.52 kg`.
+- Remove it → prints `Cleared -> 0.00 kg. Ready.` and goes quiet.
+
+For raw per-cell debugging, turn on the verbose stream with `d`.
+
 ## Serial commands
 Type the letter and press Enter:
 
 | Key | Action |
 |-----|--------|
 | `h` | help |
-| `d` | live readings ON/OFF |
 | `t` | tare (zero) — platform must be empty |
 | `c` | calibrate with a known weight on the platform |
 | `n` | noise test — shows how shaky each sensor is (find the bad cell) |
 | `i` | identify — press a corner, it tells you the sensor number (S1–S4) |
 | `a` | auto-zero tracking ON/OFF |
+| `d` | DEBUG stream ON/OFF (raw per-cell numbers) |
 | `p` | print current calibration & offsets |
 | `s` | save to EEPROM |
 | `e` | erase EEPROM (back to defaults) |
@@ -56,7 +65,8 @@ Limitation: AZT only corrects drift while empty/known. A cell that drifts kg's *
 loaded** is a hardware fault (re-solder S1/S2 off the breadboard, clean 5V, common GND).
 
 ## Status / known issues
-- Load cells confirmed **5-wire full bridge** → one HX711 per cell is correct.
-- Drift to negative after tare (creep / thermal / settling) — tare only when empty & settled.
-- Wide fluctuation concentrated on **S1** and **S4** (suspect wiring / HX711 / mounting).
-  Use the `n` noise test to confirm which cell is bad, then swap modules to isolate.
+- Load cells confirmed **5-wire full bridge**, ~400 Ω, all healthy → cells are NOT the problem.
+- **S1 and S2** drift hard; **S3 and S4** are rock-stable. A new HX711 on S1 fixed it only
+  temporarily → the fault is most likely the **connections (breadboard)**, not the chips.
+- Real fix: get S1/S2's DT/SCK/VCC/GND **off the breadboard** (solder or screw terminals),
+  clean 5 V, solid common ground. Software (median + auto-zero) only masks idle drift.
