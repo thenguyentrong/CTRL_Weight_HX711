@@ -32,6 +32,7 @@ Type the letter and press Enter:
 | `t` | tare (zero) — platform must be empty |
 | `c` | calibrate with a known weight on the platform |
 | `n` | noise test — shows how shaky each sensor is (find the bad cell) |
+| `i` | identify — press a corner, it tells you the sensor number (S1–S4) |
 | `p` | print current calibration & offsets |
 | `s` | save to EEPROM |
 | `e` | erase EEPROM (back to defaults) |

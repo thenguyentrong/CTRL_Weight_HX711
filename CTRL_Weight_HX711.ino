@@ -186,11 +186,60 @@ void handleSerial() {
     case 't': doTare(); break;
     case 'c': doCalibrate(); break;
     case 'n': doNoiseTest(); break;
+    case 'i': doIdentify(); break;
     case 'p': printCal(); break;
     case 's': saveEEPROM(); break;
     case 'e': setDefaults(); saveEEPROM(); Serial.println(F("Erased -> defaults.")); break;
     default : Serial.print(F("Unknown command: ")); Serial.println(c); printHelp(); break;
   }
+}
+
+// Press one corner -> tells you which sensor number it is.
+void doIdentify() {
+  bool wasLive = liveView; liveView = false;
+  Serial.println(F("IDENTIFY MODE:"));
+  Serial.println(F("Press DOWN on ONE corner at a time - I'll name its sensor."));
+  Serial.println(F("Send any key + Enter to stop."));
+
+  long base[NUM];
+  if (!readAvgAll(15, base)) { Serial.println(F("read failed - check wiring")); liveView = wasLive; return; }
+
+  float fbase[NUM];
+  for (byte i = 0; i < NUM; i++) fbase[i] = base[i];
+
+  const long PRESS = 50000;   // counts to count as a press (~2.5 kg, above noise)
+
+  while (!Serial.available()) {
+    long raw[NUM];
+    if (!readRound(raw)) continue;
+
+    long d[NUM], bestAbs = 0;
+    byte best = 0;
+    for (byte i = 0; i < NUM; i++) {
+      d[i] = raw[i] - (long)fbase[i];
+      long a = (d[i] < 0) ? -d[i] : d[i];
+      if (a > bestAbs) { bestAbs = a; best = i; }
+    }
+
+    if (bestAbs < PRESS) {
+      // nothing pressed: slowly track baseline so drift can't false-trigger
+      for (byte i = 0; i < NUM; i++) fbase[i] = 0.97 * fbase[i] + 0.03 * raw[i];
+    } else {
+      Serial.print(F(">>> corner = S")); Serial.print(best + 1);
+      if (d[best] < 0) Serial.print(F("  (NEGATIVE = this cell is wired reversed!)"));
+      Serial.print(F("   ["));
+      for (byte i = 0; i < NUM; i++) {
+        Serial.print(F("S")); Serial.print(i + 1); Serial.print('=');
+        Serial.print(d[i]);
+        if (i < NUM - 1) Serial.print(' ');
+      }
+      Serial.println(']');
+    }
+    delay(120);
+  }
+  while (Serial.available()) Serial.read();
+  Serial.println(F("Identify stopped."));
+  liveView = wasLive;
 }
 
 void doTare() {
@@ -330,5 +379,5 @@ void printCal() {
 }
 
 void printHelp() {
-  Serial.println(F("Commands: h=help d=live t=tare c=calibrate n=noise p=print s=save e=erase"));
+  Serial.println(F("Commands: h=help d=live t=tare c=calibrate n=noise i=identify p=print s=save e=erase"));
 }
