@@ -39,7 +39,8 @@ Type the letter and press Enter:
 | `h` | help |
 | `t` | tare (zero) — platform must be empty |
 | `c` | simple calibrate — one known weight in the middle (all cells share one factor) |
-| `k` | **corner calibrate** — zero, then put the weight on each corner; solves each cell's factor (more accurate, position-independent) |
+| `k` | **corner calibrate** (cells MOUNTED) — zero, then weight on each corner; solves 4×4 to account for force leakage |
+| `b` | **bench calibrate** (cells OUT) — clamp each cell, put the weight on its load end; isolated per-cell cal, **best accuracy** |
 | `n` | noise test — shows how shaky each sensor is (find the bad cell) |
 | `i` | identify — press a corner, it tells you the sensor number (S1–S4) |
 | `a` | auto-zero tracking ON/OFF |

@@ -10,13 +10,15 @@
  *
  * CALIBRATION:
  *   c = simple  (one known weight in the middle -> all cells share one factor)
- *   k = CORNER  (zero, then put the weight over each corner in turn; it solves
- *               each cell's true factor -> accurate at any position). More accurate.
+ *   k = CORNER  (cells MOUNTED: zero, then weight on each corner; solves 4x4 to
+ *               account for force leakage -> position-independent.)
+ *   b = BENCH   (cells OUT of platform: clamp each cell, weight on its load end;
+ *               isolated per-cell cal -> BEST accuracy, no leakage to fight.)
  *
  * SERIAL: 57600 baud, line ending "Newline".
  * COMMANDS:
- *   h help | t tare | c calibrate(simple) | k corner-calibrate | n noise | i identify
- *   a auto-zero on/off | d DEBUG stream on/off | p print | s save | e erase
+ *   h help | t tare | c calibrate(simple) | k corner-calibrate | b bench-calibrate
+ *   n noise | i identify | a auto-zero on/off | d DEBUG stream on/off | p print | s save | e erase
  * ==================================================================
  */
 
@@ -225,6 +227,7 @@ void handleSerial() {
     case 't': doTare(); break;
     case 'c': doCalibrate(); break;
     case 'k': doCornerCalibrate(); break;
+    case 'b': doIsolatedCal(); break;
     case 'n': doNoiseTest(); break;
     case 'i': doIdentify(); break;
     case 'p': printCal(); break;
@@ -344,6 +347,87 @@ bool solve4(float A[NUM][NUM], float b[NUM], float x[NUM]) {
   return true;
 }
 
+// Trimmed-mean of n reads of one cell only.
+bool readOneCellAvg(byte idx, int n, long &out) {
+  if (n < 3) n = 3;
+  long sum = 0, mn = 0, mx = 0;
+  bool first = true; int got = 0;
+  for (int k = 0; k < n; k++) {
+    long r;
+    if (!readRaw(idx, r)) continue;
+    if (first) { mn = mx = r; first = false; }
+    else { if (r < mn) mn = r; if (r > mx) mx = r; }
+    sum += r;
+    got++;
+  }
+  if (got < 3) return false;
+  out = (sum - mn - mx) / (got - 2);
+  return true;
+}
+
+// ISOLATED PER-CELL CALIBRATION (cells OUT of platform).
+// One cell at a time: clamp the FIXED end, put the known weight on the LOAD end.
+// Because there is no leakage, factor_i = W / net_i  exactly. Best accuracy possible.
+void doIsolatedCal() {
+  Serial.println(F("=== BENCH / ISOLATED PER-CELL CALIBRATION ==="));
+  Serial.println(F("Use this when the cells are OUT of the platform."));
+  Serial.println(F("For each cell: CLAMP the fixed end, weight goes on the LOAD end."));
+  Serial.print  (F("Test weight kg> "));
+  float W = readSerialFloat();
+  if (W <= 0) { Serial.println(F("\nCancelled.")); return; }
+  Serial.print(W, 3); Serial.println(F(" kg"));
+
+  for (byte i = 0; i < NUM; i++) {
+    Serial.println();
+    Serial.print(F("--- Cell S")); Serial.print(i + 1); Serial.println(F(" ---"));
+    Serial.println(F("Set up the cell (fixed end clamped, load end free, NOTHING on it)."));
+    Serial.println(F("Press any key + Enter to ZERO this cell..."));
+    if (!waitKey(180000)) { Serial.println(F("timeout - cancelled.")); return; }
+    long o;
+    if (!readOneCellAvg(i, 25, o)) { Serial.println(F("  read fail - skipping cell.")); continue; }
+    cal.offset[i] = o;
+    Serial.print(F("  zeroed at ")); Serial.println(o);
+
+    Serial.print(F("Now put the ")); Serial.print(W, 2); Serial.println(F(" kg on the LOAD END."));
+    Serial.println(F("Press any key + Enter when it has settled..."));
+    if (!waitKey(180000)) { Serial.println(F("timeout - cancelled.")); return; }
+    long r;
+    if (!readOneCellAvg(i, 25, r)) { Serial.println(F("  read fail - skipping cell.")); continue; }
+    long net = r - cal.offset[i];
+    long anet = net < 0 ? -net : net;
+    Serial.print(F("  net = ")); Serial.println(net);
+    if (anet < 1000) {
+      Serial.println(F("  !! Cell barely responded - damaged or not properly loaded. NOT calibrated."));
+      continue;
+    }
+    cal.kgPerCount[i] = W / (float)net;
+    Serial.print(F("  factor = ")); Serial.print((long)(1.0 / cal.kgPerCount[i]));
+    Serial.print(F(" counts/kg"));
+    if (net < 0) Serial.print(F("  (NEGATIVE -> reversed wiring; swap green/white)"));
+    Serial.println();
+  }
+
+  saveEEPROM();
+  resetRuntime();
+  Serial.println();
+  Serial.println(F("BENCH CALIBRATION DONE."));
+  Serial.println(F("After mounting the cells back, run 't' to tare. The per-cell factors stay."));
+  printCal();
+
+  // sanity: flag any cell whose factor differs >20% from another - likely damaged
+  long ref = 0; bool gotRef = false;
+  for (byte i = 0; i < NUM; i++) {
+    if (cal.kgPerCount[i] == 0) continue;
+    long f = (long)(1.0 / cal.kgPerCount[i]); if (f < 0) f = -f;
+    if (!gotRef) { ref = f; gotRef = true; continue; }
+    long diff = f - ref; if (diff < 0) diff = -diff;
+    if (ref > 0 && diff * 100L / ref > 20) {
+      Serial.print(F("WARNING: S")); Serial.print(i + 1);
+      Serial.println(F(" factor is >20% off another cell - may be damaged."));
+    }
+  }
+}
+
 void doNoiseTest() {
   const int N = 60;
   Serial.print(F("NOISE test (")); Serial.print(N); Serial.println(F(" samples) - empty & still..."));
@@ -429,5 +513,5 @@ void printCal() {
   Serial.println(F("---------------------"));
 }
 void printHelp() {
-  Serial.println(F("Cmds: h | t tare | c calib(mid) | k corner-calib | n noise | i identify | a auto-zero | d debug | p print | s save | e erase"));
+  Serial.println(F("Cmds: h | t tare | c calib(mid) | k corner-calib | b bench-calib(cells out) | n noise | i identify | a auto-zero | d debug | p print | s save | e erase"));
 }
