@@ -13,6 +13,20 @@
  *   HX711 GND -> GND
  *   Load cell -> HX711: Red=E+ Black=E- Green=A+ White=A- Yellow->GND
  *
+ * LOAD CELL SPECS (from datasheet):
+ *   - Rated capacity:        100 kg
+ *   - Best accuracy range:   20-80 kg
+ *   - Sensitivity:           2.0 mV/V (+/- 0.2)
+ *   - Input impedance:       350 +/- 6 ohm
+ *   - Output impedance:      405 +/- 6 ohm
+ *   - Nonlinearity:          0.02 % F.S
+ *   - Hysteresis:            0.02 % F.S
+ *   - Comprehensive error:   +/- 0.03 % F.S
+ *   - Safety overload:       120 %  (120 kg - do NOT exceed in use)
+ *   - Limit overload:        150 %  (150 kg - PERMANENT DAMAGE above this)
+ *   - Operating temp:        -10 C to +40 C
+ *   - Expected: ~42000 counts/kg with HX711 at gain 128, AVDD ~5 V.
+ *
  * Serial: 57600 baud, line ending "Newline".
  *
  * FLOW:
@@ -42,6 +56,13 @@ byte  cellCount = 0;
 
 unsigned long lastPrint = 0;
 const unsigned long PRINT_INTERVAL = 250;  // ms between live prints
+
+// After calibration, suppress prints when the value is within +/- this many grams of 0.
+// This way an empty cell stays SILENT and you only see a line when something is on it.
+const float NEAR_ZERO_G = 5.0;
+bool postCal = false;          // true after first successful calibration
+bool wasNonZero = false;       // for one-shot "cleared" print
+unsigned long lastClearedMs = 0;
 
 void setup() {
   Serial.begin(57600);
@@ -73,8 +94,25 @@ void loop() {
 
   if (newDataReady && (millis() - lastPrint > PRINT_INTERVAL)) {
     float v = LoadCell.getData();
-    Serial.print(F("  live = "));
-    Serial.println(v, 2);
+    float av = (v < 0) ? -v : v;
+
+    if (!postCal) {
+      // Before/during calibration: stream every reading so user can see settling.
+      Serial.print(F("  live = "));
+      Serial.println(v, 2);
+    } else {
+      // After calibration: only print when something is on the cell.
+      // Quiet at zero; one-shot "0 g" print when load is removed.
+      if (av >= NEAR_ZERO_G) {
+        Serial.print(F("  weight = "));
+        Serial.print(v, 2);
+        Serial.println(F(" g"));
+        wasNonZero = true;
+      } else if (wasNonZero) {
+        Serial.println(F("  0 g"));
+        wasNonZero = false;
+      }
+    }
     newDataReady = false;
     lastPrint = millis();
   }
@@ -150,7 +188,10 @@ void calibrate() {
   Serial.println(F("***"));
   Serial.println(F("Live value now shows grams. Remove the weight - should go to ~0."));
   Serial.println(F("Next:  r = calibrate next cell  |  s = show summary  |  t = re-tare  |  c = edit factor"));
+  Serial.println(F("(Quiet at zero - you'll only see a line when something is on the cell.)"));
   Serial.println();
+  postCal = true;
+  wasNonZero = false;
 }
 
 void summary() {
