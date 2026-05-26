@@ -19,9 +19,9 @@
  *   On boot it starts calibrating Cell #1. It walks you through it:
  *     1) Set up the cell, empty.
  *     2) When the live value is steady, send 't' -> tare.
- *     3) Put the known weight on, send the weight value (e.g. 7.5).
+ *     3) Put the known weight on, send the weight value in g (e.g. 7500 for 7.5 kg).
  *     4) It prints and remembers the calibration factor for this cell.
- *   After Cell #1 it stays live (you can see kg). To do the next cell:
+ *   After Cell #1 it stays live (you can see grams). To do the next cell:
  *     - send 'r'  -> calibrate the NEXT cell (cell #2, then #3, ...)
  *     - send 's'  -> summary of all cells you have calibrated so far
  *     - send 't'  -> re-tare current cell
@@ -118,7 +118,7 @@ void calibrate() {
 
   Serial.println();
   Serial.println(F("3) Put your known weight on the LOAD end of the cell."));
-  Serial.println(F("4) Send the weight in kg (e.g.  7.5  + Enter)."));
+  Serial.println(F("4) Send the weight in GRAMS (e.g.  7500  for 7.5 kg, + Enter)."));
 
   float knownMass = 0;
   done = false;
@@ -132,7 +132,7 @@ void calibrate() {
     if (Serial.available() > 0) {
       knownMass = Serial.parseFloat();
       if (knownMass != 0) {
-        Serial.print(F("Known mass = ")); Serial.print(knownMass); Serial.println(F(" kg"));
+        Serial.print(F("Known mass = ")); Serial.print(knownMass); Serial.println(F(" g"));
         done = true;
       }
     }
@@ -148,7 +148,7 @@ void calibrate() {
   }
   Serial.print(F("Recorded as Cell #")); Serial.println(cellCount);
   Serial.println(F("***"));
-  Serial.println(F("Live value now shows kg. Remove the weight - should go to ~0."));
+  Serial.println(F("Live value now shows grams. Remove the weight - should go to ~0."));
   Serial.println(F("Next:  r = calibrate next cell  |  s = show summary  |  t = re-tare  |  c = edit factor"));
   Serial.println();
 }
