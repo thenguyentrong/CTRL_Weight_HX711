@@ -64,6 +64,17 @@ bool postCal = false;          // true after first successful calibration
 bool wasNonZero = false;       // for one-shot "cleared" print
 unsigned long lastClearedMs = 0;
 
+// ---- Auto-zero (drift compensation) ----
+// While the value sits within +/- AZ_BAND_G grams for AZ_STABLE_MS milliseconds,
+// the sketch re-tares automatically. This kills the slow electrical/thermal drift
+// you see when empty. Toggle with command 'a'.
+bool         azOn        = true;
+const float  AZ_BAND_G   = 50.0;     // re-zero only if |value| < 50 g
+const unsigned long AZ_STABLE_MS   = 4000;   // must stay in band this long
+const unsigned long AZ_MIN_GAP_MS  = 6000;   // min time between auto-tares
+unsigned long azInBandSince = 0;
+unsigned long lastAutoZero  = 0;
+
 void setup() {
   Serial.begin(57600);
   delay(10);
@@ -72,10 +83,9 @@ void setup() {
   Serial.println(F("Wiring: DT=D4, SCK=D5"));
 
   LoadCell.begin();
-  // If your cell reads NEGATIVE when loaded, uncomment the next line:
-  // LoadCell.setReverseOutput();
+  LoadCell.setReverseOutput();   // your cell reads negative when loaded -> flip it in software
 
-  unsigned long stabilizingTime = 2000;
+  unsigned long stabilizingTime = 5000;   // longer settle so the initial tare isn't taken on a moving signal
   boolean _tare = true;
   LoadCell.start(stabilizingTime, _tare);
   if (LoadCell.getTareTimeoutFlag() || LoadCell.getSignalTimeoutFlag()) {
@@ -92,29 +102,47 @@ void loop() {
   static boolean newDataReady = false;
   if (LoadCell.update()) newDataReady = true;
 
-  if (newDataReady && (millis() - lastPrint > PRINT_INTERVAL)) {
-    float v = LoadCell.getData();
+  if (newDataReady) {
+    float v  = LoadCell.getData();
     float av = (v < 0) ? -v : v;
 
-    if (!postCal) {
-      // Before/during calibration: stream every reading so user can see settling.
-      Serial.print(F("  live = "));
-      Serial.println(v, 2);
-    } else {
-      // After calibration: only print when something is on the cell.
-      // Quiet at zero; one-shot "0 g" print when load is removed.
-      if (av >= NEAR_ZERO_G) {
-        Serial.print(F("  weight = "));
-        Serial.print(v, 2);
-        Serial.println(F(" g"));
-        wasNonZero = true;
-      } else if (wasNonZero) {
-        Serial.println(F("  0 g"));
-        wasNonZero = false;
+    // ---- AUTO-ZERO TRACKING ----
+    // While the platform is empty (|v| < AZ_BAND_G) and has been for AZ_STABLE_MS,
+    // re-tare automatically. This kills slow drift while idle.
+    if (postCal && azOn) {
+      if (av < AZ_BAND_G) {
+        if (azInBandSince == 0) azInBandSince = millis();
+        if (millis() - azInBandSince > AZ_STABLE_MS
+            && millis() - lastAutoZero > AZ_MIN_GAP_MS) {
+          LoadCell.tareNoDelay();
+          lastAutoZero  = millis();
+          azInBandSince = 0;
+          Serial.println(F("  [auto-zero]"));
+        }
+      } else {
+        azInBandSince = 0;
       }
     }
+
+    // ---- PRINT ----
+    if (millis() - lastPrint > PRINT_INTERVAL) {
+      if (!postCal) {
+        Serial.print(F("  live = "));
+        Serial.println(v, 2);
+      } else {
+        if (av >= NEAR_ZERO_G) {
+          Serial.print(F("  weight = "));
+          Serial.print(v, 2);
+          Serial.println(F(" g"));
+          wasNonZero = true;
+        } else if (wasNonZero) {
+          Serial.println(F("  0 g"));
+          wasNonZero = false;
+        }
+      }
+      lastPrint = millis();
+    }
     newDataReady = false;
-    lastPrint = millis();
   }
 
   if (Serial.available() > 0) {
@@ -123,6 +151,12 @@ void loop() {
     else if (c == 'r') calibrate();
     else if (c == 's') summary();
     else if (c == 'c') changeCalFactor();
+    else if (c == 'a') {
+      azOn = !azOn;
+      Serial.print(F("Auto-zero "));
+      Serial.println(azOn ? F("ON") : F("OFF"));
+      azInBandSince = 0;
+    }
   }
 
   if (LoadCell.getTareStatus() == true) {
@@ -187,8 +221,8 @@ void calibrate() {
   Serial.print(F("Recorded as Cell #")); Serial.println(cellCount);
   Serial.println(F("***"));
   Serial.println(F("Live value now shows grams. Remove the weight - should go to ~0."));
-  Serial.println(F("Next:  r = calibrate next cell  |  s = show summary  |  t = re-tare  |  c = edit factor"));
-  Serial.println(F("(Quiet at zero - you'll only see a line when something is on the cell.)"));
+  Serial.println(F("Next:  r = calibrate next cell  |  s = show summary  |  t = re-tare  |  c = edit factor  |  a = auto-zero on/off"));
+  Serial.println(F("(Quiet at zero - you'll only see a line when something is on the cell. Auto-zero is ON.)"));
   Serial.println();
   postCal = true;
   wasNonZero = false;
