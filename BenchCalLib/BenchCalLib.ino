@@ -59,22 +59,6 @@ const unsigned long PRINT_INTERVAL = 250;  // ms between live prints
 
 bool postCal = false;          // true after first successful calibration
 
-// ---- Event-driven scale: one stable "Weight: X g" line per measurement ----
-// State machine: EMPTY -> LOADING (something put on) -> WEIGHED (locked stable value)
-// -> CHANGING (load shifted) -> back to WEIGHED or EMPTY.
-enum ScaleState { S_EMPTY, S_LOADING, S_WEIGHED, S_CHANGING };
-ScaleState scaleState = S_EMPTY;
-float lockedWeight = 0;
-
-const float ONSET_G       = 80.0;   // something present if |avg| > this
-const float CLEAR_G       = 30.0;   // back to "empty" if |avg| < this
-const float STABLE_BAND_G = 25.0;   // range over WINDOW samples to declare stable
-const float RECHECK_G     = 40.0;   // re-measure if avg differs this much from locked
-const byte  WINDOW        = 8;
-float winBuf[WINDOW];
-byte  winIdx   = 0;
-byte  winCount = 0;
-
 // ---- Auto-zero (drift compensation) ----
 // While the value sits within +/- AZ_BAND_G grams for AZ_STABLE_MS milliseconds,
 // the sketch re-tares automatically. This kills the slow electrical/thermal drift
@@ -135,65 +119,17 @@ void loop() {
       }
     }
 
-    // ---- STABILITY WINDOW ----
-    winBuf[winIdx] = v;
-    winIdx = (winIdx + 1) % WINDOW;
-    if (winCount < WINDOW) winCount++;
-    float avg = v;
-    bool stable = false;
-    if (winCount == WINDOW) {
-      float mn = winBuf[0], mx = winBuf[0], sum = 0;
-      for (byte i = 0; i < WINDOW; i++) {
-        if (winBuf[i] < mn) mn = winBuf[i];
-        if (winBuf[i] > mx) mx = winBuf[i];
-        sum += winBuf[i];
-      }
-      avg = sum / WINDOW;
-      stable = (mx - mn) < STABLE_BAND_G;
-    }
-    float aAvg = avg < 0 ? -avg : avg;
-
-    // ---- PRINT ----
-    if (!postCal) {
-      // pre-cal: stream live raw readings so user can see settling
-      if (millis() - lastPrint > PRINT_INTERVAL) {
+    // ---- STREAM ----
+    if (millis() - lastPrint > PRINT_INTERVAL) {
+      if (!postCal) {
         Serial.print(F("  live = "));
         Serial.println(v, 2);
-        lastPrint = millis();
+      } else {
+        Serial.print(F("  weight = "));
+        Serial.print(v, 2);
+        Serial.println(F(" g"));
       }
-    } else {
-      // post-cal: print one stable line per measurement (event-driven)
-      switch (scaleState) {
-        case S_EMPTY:
-          if (aAvg > ONSET_G) { scaleState = S_LOADING; Serial.println(F("  ...settling...")); }
-          break;
-        case S_LOADING:
-          if (stable) {
-            lockedWeight = avg;
-            Serial.print(F("  Weight: ")); Serial.print(avg, 1); Serial.println(F(" g"));
-            scaleState = S_WEIGHED;
-          }
-          break;
-        case S_WEIGHED:
-          if (aAvg < CLEAR_G) {
-            Serial.println(F("  Cleared. 0 g"));
-            scaleState = S_EMPTY;
-          } else if (fabs(avg - lockedWeight) > RECHECK_G) {
-            scaleState = S_CHANGING;
-            Serial.println(F("  ...changing..."));
-          }
-          break;
-        case S_CHANGING:
-          if (aAvg < CLEAR_G) {
-            Serial.println(F("  Cleared. 0 g"));
-            scaleState = S_EMPTY;
-          } else if (stable) {
-            lockedWeight = avg;
-            Serial.print(F("  Weight: ")); Serial.print(avg, 1); Serial.println(F(" g"));
-            scaleState = S_WEIGHED;
-          }
-          break;
-      }
+      lastPrint = millis();
     }
     newDataReady = false;
   }
@@ -219,8 +155,6 @@ void loop() {
 
 void calibrate() {
   postCal = false;             // show live stream during cal
-  scaleState = S_EMPTY;
-  winCount = 0; winIdx = 0;
   Serial.println(F("***"));
   Serial.print(F("CALIBRATING Cell #")); Serial.println(cellCount + 1);
   Serial.println(F("1) Clamp the FIXED end of the cell; nothing on the LOAD end."));
@@ -278,12 +212,9 @@ void calibrate() {
   Serial.println(F("***"));
   Serial.println(F("Live value now shows grams. Remove the weight - should go to ~0."));
   Serial.println(F("Next:  r = calibrate next cell  |  s = show summary  |  t = re-tare  |  c = edit factor  |  a = auto-zero on/off"));
-  Serial.println(F("Place something on the cell - I print one  Weight: X g  line once it settles."));
-  Serial.println(F("Remove it -> 'Cleared. 0 g'. Auto-zero is ON."));
+  Serial.println(F("Live weight streams continuously now. Remove the weight - should go to ~0."));
   Serial.println();
   postCal = true;
-  scaleState = S_EMPTY;
-  winCount = 0; winIdx = 0;
 }
 
 void summary() {
