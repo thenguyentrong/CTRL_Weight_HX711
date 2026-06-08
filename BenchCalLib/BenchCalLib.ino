@@ -59,6 +59,18 @@ const unsigned long PRINT_INTERVAL = 250;  // ms between live prints
 
 bool postCal = false;          // true after first successful calibration
 
+// ---- Display smoothing ----
+// Moving average over MA_N samples (~1.6 s at 10 SPS), then round the printed
+// weight to DISP_ROUND_G grams. Smooths out the slow thermal wobble (~33 g) so
+// the live readout looks clean. The RAW value is still used for tare / cal /
+// auto-zero so those stay responsive.
+const byte  MA_N         = 16;
+const float DISP_ROUND_G = 10.0;
+float maBuf[MA_N];
+byte  maIdx   = 0;
+byte  maCount = 0;
+float maSum   = 0;
+
 // ---- Auto-zero (drift compensation) ----
 // While the value sits within +/- AZ_BAND_G grams for AZ_STABLE_MS milliseconds,
 // the sketch re-tares automatically. This kills the slow electrical/thermal drift
@@ -101,6 +113,14 @@ void loop() {
     float v  = LoadCell.getData();
     float av = (v < 0) ? -v : v;
 
+    // ---- MOVING AVERAGE (display only) ----
+    if (maCount == MA_N) maSum -= maBuf[maIdx];
+    maBuf[maIdx] = v;
+    maSum += v;
+    maIdx = (maIdx + 1) % MA_N;
+    if (maCount < MA_N) maCount++;
+    float vSmooth = maSum / maCount;
+
     // ---- AUTO-ZERO TRACKING ----
     // While the platform is empty (|v| < AZ_BAND_G) and has been for AZ_STABLE_MS,
     // re-tare automatically. This kills slow drift while idle.
@@ -122,11 +142,14 @@ void loop() {
     // ---- STREAM ----
     if (millis() - lastPrint > PRINT_INTERVAL) {
       if (!postCal) {
+        // pre-cal: print the RAW value so we can see when it's steady to tare
         Serial.print(F("  live = "));
         Serial.println(v, 2);
       } else {
+        // post-cal: print the SMOOTHED + rounded weight for a clean readout
+        float disp = roundf(vSmooth / DISP_ROUND_G) * DISP_ROUND_G;
         Serial.print(F("  weight = "));
-        Serial.print(v, 2);
+        Serial.print(disp, 0);
         Serial.println(F(" g"));
       }
       lastPrint = millis();
