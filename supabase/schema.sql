@@ -42,16 +42,27 @@ create table recordings (
 );
 create index recordings_started_at_idx on recordings (started_at desc);
 
--- 5) Realtime publication for the things the dashboard cares about.
+-- 5) `commands` lets the dashboard ask the bridge to act on the Arduino
+-- (e.g. tare/zero). Dashboard INSERTs via anon; bridge polls + stamps processed_at.
+create table commands (
+  id           bigserial primary key,
+  command      text not null,
+  created_at   timestamptz not null default now(),
+  processed_at timestamptz
+);
+create index commands_unprocessed_idx on commands (created_at) where processed_at is null;
+
+-- 6) Realtime publication for the things the dashboard cares about.
 alter publication supabase_realtime add table live;
 alter publication supabase_realtime add table weighings;
 alter publication supabase_realtime add table recordings;
 
--- 6) RLS.
+-- 7) RLS.
 alter table live       enable row level security;
 alter table weighings  enable row level security;
 alter table readings   enable row level security;
 alter table recordings enable row level security;
+alter table commands   enable row level security;
 
 create policy "anon read live"        on live       for select using (true);
 create policy "anon read weighings"   on weighings  for select using (true);
@@ -60,3 +71,5 @@ create policy "anon read recordings"  on recordings for select using (true);
 create policy "anon insert recordings" on recordings for insert with check (true);
 create policy "anon update recordings" on recordings for update using (true);
 create policy "anon delete recordings" on recordings for delete using (true);
+create policy "anon read commands"    on commands   for select using (true);
+create policy "anon insert commands"  on commands   for insert with check (true);

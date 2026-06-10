@@ -47,6 +47,12 @@ if not SUPABASE_SERVICE_KEY:
 
 LIVE_UPDATE_PERIOD_S    = 1.0   # throttle live UPDATE to this rate
 READINGS_INSERT_PERIOD_S = 1.0  # also append one history row per N seconds
+CMD_POLL_PERIOD_S       = 1.0   # how often to check the `commands` table
+
+# Map a command name from the dashboard to the serial byte Scale4 expects.
+SERIAL_COMMANDS = {
+    "tare": b"t",   # re-tare all 4 cells to zero (platform must be empty)
+}
 LOAD_THRESHOLD_G        = 100.0 # above this = something is on it
 UNLOAD_THRESHOLD_G      = 50.0  # below this = cleared
 STABLE_BAND_G           = 10.0  # must stay inside this band
@@ -116,6 +122,29 @@ class EventDetector:
         return None
 
 
+def handle_commands(sb: Client, ser: "serial.Serial") -> None:
+    """Poll for unprocessed dashboard commands and forward them to the Arduino."""
+    res = (
+        sb.table("commands")
+        .select("*")
+        .is_("processed_at", "null")
+        .order("created_at")
+        .execute()
+    )
+    for cmd in res.data or []:
+        name = (cmd.get("command") or "").strip().lower()
+        byte = SERIAL_COMMANDS.get(name)
+        if byte is not None:
+            ser.write(byte)
+            ser.flush()
+            print(f"*** COMMAND: sent '{name}' -> Arduino (cmd #{cmd['id']})")
+        else:
+            print(f"  unknown command '{name}' (cmd #{cmd['id']}) — marking done")
+        sb.table("commands").update(
+            {"processed_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", cmd["id"]).execute()
+
+
 # ---------- main loop ----------
 def main() -> None:
     print(f"Supabase: {SUPABASE_URL}")
@@ -123,6 +152,7 @@ def main() -> None:
     detector = EventDetector()
     last_live = 0.0
     last_reading = 0.0
+    last_cmd = 0.0
 
     while True:
         try:
@@ -131,14 +161,22 @@ def main() -> None:
             print("Connected. Reading...")
             while True:
                 raw = ser.readline()
+                now = time.monotonic()
+
+                # check for dashboard commands (tare/zero) regardless of serial content
+                if now - last_cmd >= CMD_POLL_PERIOD_S:
+                    last_cmd = now
+                    try:
+                        handle_commands(sb, ser)
+                    except Exception as exc:
+                        print(f"  command poll failed: {exc}")
+
                 if not raw:
                     continue
                 line = raw.decode("utf-8", errors="replace").strip()
                 reading = parse_line(line)
                 if reading is None:
                     continue
-
-                now = time.monotonic()
 
                 # event capture
                 captured = detector.update(reading.total_g, now)

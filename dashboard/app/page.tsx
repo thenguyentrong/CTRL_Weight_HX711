@@ -5,6 +5,7 @@ import { supabase, supabaseConfigured } from "../lib/supabase";
 import WeightChart, { type ExternalRange } from "./WeightChart";
 import RecordPanel from "./RecordPanel";
 import RecordingsList, { type Recording } from "./RecordingsList";
+import TareButton from "./TareButton";
 
 type Live = {
   weight_g: number;
@@ -116,6 +117,8 @@ export default function Page() {
           </div>
         )}
       </div>
+
+      <TareButton />
 
       <div
         style={{
