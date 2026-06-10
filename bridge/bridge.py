@@ -22,7 +22,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
@@ -48,6 +48,9 @@ if not SUPABASE_SERVICE_KEY:
 LIVE_UPDATE_PERIOD_S    = 1.0   # throttle live UPDATE to this rate
 READINGS_INSERT_PERIOD_S = 1.0  # also append one history row per N seconds
 CMD_POLL_PERIOD_S       = 1.0   # how often to check the `commands` table
+ACTIVE_REC_POLL_PERIOD_S = 2.0  # how often to refresh which recording is active
+PRUNE_PERIOD_S          = 6 * 3600.0  # how often to prune the idle stream
+PRUNE_KEEP_DAYS         = 7     # delete untagged (idle) readings older than this
 
 # Map a command name from the dashboard to the serial byte Scale4 expects.
 SERIAL_COMMANDS = {
@@ -145,6 +148,39 @@ def handle_commands(sb: Client, ser: "serial.Serial") -> None:
         ).eq("id", cmd["id"]).execute()
 
 
+def get_active_recording_id(sb: Client) -> Optional[int]:
+    """Return the id of the currently-running recording (stopped_at is null), or None."""
+    res = (
+        sb.table("recordings")
+        .select("id")
+        .is_("stopped_at", "null")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return int(rows[0]["id"]) if rows else None
+
+
+def prune_idle_readings(sb: Client) -> None:
+    """Delete untagged (idle-stream) readings older than PRUNE_KEEP_DAYS.
+
+    Readings owned by a recording (recording_id is not null) are NEVER touched.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=PRUNE_KEEP_DAYS)
+    ).isoformat()
+    res = (
+        sb.table("readings")
+        .delete()
+        .is_("recording_id", "null")
+        .lt("recorded_at", cutoff)
+        .execute()
+    )
+    n = len(res.data or [])
+    print(f"*** PRUNE: deleted {n} idle readings older than {PRUNE_KEEP_DAYS} days")
+
+
 # ---------- main loop ----------
 def main() -> None:
     print(f"Supabase: {SUPABASE_URL}")
@@ -153,6 +189,9 @@ def main() -> None:
     last_live = 0.0
     last_reading = 0.0
     last_cmd = 0.0
+    last_rec = 0.0
+    last_prune = 0.0
+    active_recording_id: Optional[int] = None
 
     while True:
         try:
@@ -170,6 +209,25 @@ def main() -> None:
                         handle_commands(sb, ser)
                     except Exception as exc:
                         print(f"  command poll failed: {exc}")
+
+                # refresh which recording (if any) currently owns incoming readings
+                if now - last_rec >= ACTIVE_REC_POLL_PERIOD_S:
+                    last_rec = now
+                    try:
+                        new_id = get_active_recording_id(sb)
+                        if new_id != active_recording_id:
+                            print(f"*** RECORDING: active id -> {new_id}")
+                        active_recording_id = new_id
+                    except Exception as exc:
+                        print(f"  active-recording poll failed: {exc}")
+
+                # periodically prune the idle (untagged) stream
+                if now - last_prune >= PRUNE_PERIOD_S:
+                    last_prune = now
+                    try:
+                        prune_idle_readings(sb)
+                    except Exception as exc:
+                        print(f"  prune failed: {exc}")
 
                 if not raw:
                     continue
@@ -209,13 +267,15 @@ def main() -> None:
                     except Exception as exc:
                         print(f"  live update failed: {exc}")
 
-                # throttled history append (time-series log)
+                # throttled history append (time-series log). Tag it with the active
+                # recording so that reading is owned/kept; untagged rows get pruned.
                 if now - last_reading >= READINGS_INSERT_PERIOD_S:
                     last_reading = now
+                    row = {"weight_g": float(reading.total_g)}
+                    if active_recording_id is not None:
+                        row["recording_id"] = active_recording_id
                     try:
-                        sb.table("readings").insert(
-                            {"weight_g": float(reading.total_g)}
-                        ).execute()
+                        sb.table("readings").insert(row).execute()
                     except Exception as exc:
                         print(f"  readings insert failed: {exc}")
 

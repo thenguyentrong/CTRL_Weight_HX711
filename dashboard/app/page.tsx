@@ -6,6 +6,8 @@ import WeightChart, { type ExternalRange } from "./WeightChart";
 import RecordPanel from "./RecordPanel";
 import RecordingsList, { type Recording } from "./RecordingsList";
 import TareButton from "./TareButton";
+import RecordingStats from "./RecordingStats";
+import ExportPanel from "./ExportPanel";
 
 type Live = {
   weight_g: number;
@@ -78,9 +80,23 @@ export default function Page() {
 
   return (
     <main style={{ maxWidth: 900, margin: "0 auto", padding: "2rem" }}>
-      <h1 style={{ fontSize: 18, color: "#666", letterSpacing: 1, margin: 0 }}>
-        CTRL WEIGHT — LIVE
-      </h1>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <h1 style={{ fontSize: 18, color: "#666", letterSpacing: 1, margin: 0 }}>
+          CTRL WEIGHT — LIVE
+        </h1>
+        <a
+          href="/api/logout"
+          style={{ color: "#555", fontSize: 12, textDecoration: "none" }}
+        >
+          logout
+        </a>
+      </div>
       {!supabaseConfigured && (
         <div
           style={{
@@ -150,10 +166,24 @@ export default function Page() {
 
       <RecordPanel />
 
+      {viewRange?.recordingId != null && (
+        <RecordingStats
+          recordingId={viewRange.recordingId}
+          label={viewRange.label}
+        />
+      )}
+
       <WeightChart
         externalRange={viewRange}
         onClearExternal={() => setViewRange(null)}
       />
+
+      {viewRange?.recordingId != null && (
+        <ExportPanel
+          recordingId={viewRange.recordingId}
+          title={viewRange.label}
+        />
+      )}
 
       <RecordingsList
         onView={(r: Recording) =>
@@ -161,6 +191,7 @@ export default function Page() {
             from: new Date(r.started_at),
             to: r.stopped_at ? new Date(r.stopped_at) : new Date(),
             label: r.name || `recording #${r.id}`,
+            recordingId: r.id,
           })
         }
       />

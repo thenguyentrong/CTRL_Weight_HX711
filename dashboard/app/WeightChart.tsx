@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  CartesianGrid,
+  Label,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -12,21 +14,47 @@ import {
 import { supabase } from "../lib/supabase";
 
 type Reading = { weight_g: number; recorded_at: string };
-type RangeKey = "5min" | "1h" | "24h" | "custom";
+type RangeKey = "5min" | "1h" | "24h" | "7d" | "30d" | "all" | "custom";
 
 const QUICK: { key: RangeKey; label: string; ms: number }[] = [
   { key: "5min", label: "5 min", ms: 5 * 60 * 1000 },
   { key: "1h", label: "1 h", ms: 60 * 60 * 1000 },
   { key: "24h", label: "24 h", ms: 24 * 60 * 60 * 1000 },
+  { key: "7d", label: "7 d", ms: 7 * 24 * 60 * 60 * 1000 },
+  { key: "30d", label: "30 d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { key: "all", label: "All", ms: Number.POSITIVE_INFINITY },
 ];
+
+// ranges that benefit from a 10 s live refresh (the long ones don't)
+const LIVE_REFRESH: RangeKey[] = ["5min", "1h", "24h"];
 
 const MAX_POINTS = 1200;
 
-function downsample<T>(arr: T[], maxPoints: number): T[] {
-  if (arr.length <= maxPoints) return arr;
-  const step = arr.length / maxPoints;
-  const out: T[] = [];
-  for (let i = 0; i < maxPoints; i++) out.push(arr[Math.floor(i * step)]);
+type Point = { t: number; kg: number };
+
+// Bucket-average into <= maxPoints evenly-sized buckets so multi-day curves stay
+// smooth instead of being thinned to every-Nth sample.
+function bucketAverage(rows: Reading[], maxPoints: number): Point[] {
+  const pts: Point[] = rows.map((r) => ({
+    t: new Date(r.recorded_at).getTime(),
+    kg: r.weight_g / 1000,
+  }));
+  if (pts.length <= maxPoints) return pts;
+  const bucket = pts.length / maxPoints;
+  const out: Point[] = [];
+  for (let i = 0; i < maxPoints; i++) {
+    const start = Math.floor(i * bucket);
+    const end = Math.floor((i + 1) * bucket);
+    let sumKg = 0;
+    let sumT = 0;
+    let n = 0;
+    for (let j = start; j < end && j < pts.length; j++) {
+      sumKg += pts[j].kg;
+      sumT += pts[j].t;
+      n++;
+    }
+    if (n > 0) out.push({ t: sumT / n, kg: sumKg / n });
+  }
   return out;
 }
 
@@ -38,7 +66,12 @@ function toLocalInputValue(d: Date): string {
   );
 }
 
-export type ExternalRange = { from: Date; to: Date; label: string } | null;
+export type ExternalRange = {
+  from: Date;
+  to: Date;
+  label: string;
+  recordingId?: number; // when set, query readings by ownership (survives pruning)
+} | null;
 
 export default function WeightChart({
   externalRange,
@@ -54,13 +87,13 @@ export default function WeightChart({
   );
   const [customTo, setCustomTo] = useState(toLocalInputValue(now));
 
-  const [readings, setReadings] = useState<Reading[]>([]);
+  const [chartData, setChartData] = useState<Point[]>([]);
   const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
-  // auto-refresh the live ranges every 10 s (skip when external range is pinned)
+  // auto-refresh the live short ranges every 10 s (skip long/custom/external)
   useEffect(() => {
-    if (externalRange || range === "custom") return;
+    if (externalRange || !LIVE_REFRESH.includes(range)) return;
     const id = setInterval(() => setTick((t) => t + 1), 10_000);
     return () => clearInterval(id);
   }, [range, externalRange]);
@@ -68,60 +101,63 @@ export default function WeightChart({
   useEffect(() => {
     let cancelled = false;
 
-    let from: Date;
-    let to: Date;
-    if (externalRange) {
-      from = externalRange.from;
-      to = externalRange.to;
-    } else if (range === "custom") {
-      if (!customFrom || !customTo) return;
-      from = new Date(customFrom);
-      to = new Date(customTo);
-      if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) return;
+    // Build the query: by recording ownership when viewing a recording, else by time.
+    let query = supabase
+      .from("readings")
+      .select("weight_g, recorded_at")
+      .order("recorded_at", { ascending: true })
+      .limit(50_000);
+
+    if (externalRange?.recordingId != null) {
+      query = query.eq("recording_id", externalRange.recordingId);
     } else {
-      const cfg = QUICK.find((q) => q.key === range)!;
-      to = new Date();
-      from = new Date(to.getTime() - cfg.ms);
+      let from: Date;
+      let to: Date;
+      if (externalRange) {
+        from = externalRange.from;
+        to = externalRange.to;
+      } else if (range === "custom") {
+        if (!customFrom || !customTo) return;
+        from = new Date(customFrom);
+        to = new Date(customTo);
+        if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) return;
+      } else {
+        const cfg = QUICK.find((q) => q.key === range)!;
+        to = new Date();
+        from = isFinite(cfg.ms) ? new Date(to.getTime() - cfg.ms) : new Date(0);
+      }
+      query = query
+        .gte("recorded_at", from.toISOString())
+        .lte("recorded_at", to.toISOString());
     }
 
     setLoading(true);
-    supabase
-      .from("readings")
-      .select("weight_g, recorded_at")
-      .gte("recorded_at", from.toISOString())
-      .lte("recorded_at", to.toISOString())
-      .order("recorded_at", { ascending: true })
-      .limit(50_000)
-      .then(({ data }) => {
-        if (cancelled) return;
-        const rows = (data ?? []) as Reading[];
-        setReadings(downsample(rows, MAX_POINTS));
-        setLoading(false);
-      });
+    query.then(({ data }) => {
+      if (cancelled) return;
+      const rows = (data ?? []) as Reading[];
+      setChartData(bucketAverage(rows, MAX_POINTS));
+      setLoading(false);
+    });
 
     return () => {
       cancelled = true;
     };
   }, [range, customFrom, customTo, tick, externalRange]);
 
-  const chartData = useMemo(
-    () =>
-      readings.map((r) => ({
-        t: new Date(r.recorded_at).getTime(),
-        kg: r.weight_g / 1000,
-      })),
-    [readings]
-  );
+  const isLongRange =
+    range === "7d" ||
+    range === "30d" ||
+    range === "all" ||
+    (externalRange != null &&
+      externalRange.to.getTime() - externalRange.from.getTime() >
+        24 * 60 * 60 * 1000);
 
   const fmtTick = (t: number) => {
     const d = new Date(t);
-    if (range === "5min" || range === "1h") {
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (isLongRange) {
+      return d.toLocaleDateString([], { month: "short", day: "numeric" });
     }
-    if (range === "24h") {
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-    return d.toLocaleDateString();
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
   return (
@@ -212,12 +248,13 @@ export default function WeightChart({
       </div>
 
       <div
+        id="weight-chart-export"
         style={{
           background: "#0f0f0f",
           border: "1px solid #1f1f1f",
           borderRadius: 8,
           padding: "1rem",
-          height: 340,
+          height: 360,
         }}
       >
         {chartData.length === 0 ? (
@@ -234,7 +271,11 @@ export default function WeightChart({
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
+            <LineChart
+              data={chartData}
+              margin={{ top: 10, right: 24, bottom: 24, left: 8 }}
+            >
+              <CartesianGrid stroke="#1a1a1a" />
               <XAxis
                 dataKey="t"
                 type="number"
@@ -242,13 +283,24 @@ export default function WeightChart({
                 tickFormatter={fmtTick}
                 stroke="#666"
                 fontSize={11}
-              />
+              >
+                <Label value="time" position="insideBottom" offset={-12} fill="#666" fontSize={11} />
+              </XAxis>
               <YAxis
                 tickFormatter={(v) => `${(v as number).toFixed(1)}`}
                 stroke="#666"
                 fontSize={11}
-                width={40}
-              />
+                width={48}
+              >
+                <Label
+                  value="weight (kg)"
+                  angle={-90}
+                  position="insideLeft"
+                  style={{ textAnchor: "middle" }}
+                  fill="#666"
+                  fontSize={11}
+                />
+              </YAxis>
               <Tooltip
                 contentStyle={{
                   background: "#161616",
@@ -273,7 +325,10 @@ export default function WeightChart({
       </div>
 
       <div style={{ color: "#555", fontSize: 11, marginTop: "0.5rem" }}>
-        {readings.length} points · auto-refresh every 10 s (live ranges)
+        {chartData.length} points
+        {LIVE_REFRESH.includes(range) && !externalRange
+          ? " · auto-refresh every 10 s"
+          : ""}
       </div>
     </section>
   );

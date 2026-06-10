@@ -24,6 +24,9 @@ create table weighings (
 create index weighings_captured_at_idx on weighings (captured_at desc);
 
 -- 3) `readings` is the full time-series log (~1 row/second) used for charting.
+-- The `recording_id` FK (added after `recordings` exists, below) ties a reading to
+-- the recording that owns it: null = idle stream (pruned after 7 days by the bridge),
+-- non-null = owned by a recording and kept forever.
 create table readings (
   id           bigserial primary key,
   weight_g     real not null,
@@ -41,6 +44,12 @@ create table recordings (
   stopped_at  timestamptz
 );
 create index recordings_started_at_idx on recordings (started_at desc);
+
+-- readings.recording_id: which recording (if any) owns this reading. Added here
+-- because it references `recordings`, which is defined just above.
+alter table readings
+  add column recording_id bigint references recordings(id) on delete set null;
+create index readings_recording_id_idx on readings (recording_id) where recording_id is not null;
 
 -- 5) `commands` lets the dashboard ask the bridge to act on the Arduino
 -- (e.g. tare/zero). Dashboard INSERTs via anon; bridge polls + stamps processed_at.
