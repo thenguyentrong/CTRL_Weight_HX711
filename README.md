@@ -73,6 +73,17 @@ The firmware applies, in order:
 Limitation: AZT only corrects drift while empty/known. A cell that drifts kg's **while
 loaded** is a hardware fault (re-solder S1/S2 off the breadboard, clean 5V, common GND).
 
+## Online streaming (Vercel + Supabase)
+
+View the live scale value from any browser:
+- `supabase/schema.sql` — Postgres tables (`live` singleton + `weighings` history) + RLS.
+- `bridge/` — Python script that runs on the 24/7 PC, reads USB serial, throttles
+  a 1 Hz live update, and inserts one row per stable weighing event.
+- `dashboard/` — Next.js app deployed on Vercel that subscribes to Supabase realtime
+  and renders the current weight + the last 50 weighings.
+
+Each piece has its own README with setup steps.
+
 ## Status / known issues
 - Load cells confirmed **5-wire full bridge**, ~400 Ω, all healthy → cells are NOT the problem.
 - **S1 and S2** drift hard; **S3 and S4** are rock-stable. A new HX711 on S1 fixed it only
