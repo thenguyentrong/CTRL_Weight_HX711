@@ -35,7 +35,15 @@ load_dotenv()
 SERIAL_PORT = os.environ["SERIAL_PORT"]
 SERIAL_BAUD = int(os.environ.get("SERIAL_BAUD", "57600"))
 SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+# Accept either name — Vercel's Supabase integration exports the long one.
+SUPABASE_SERVICE_KEY = (
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_SERVICE_KEY")
+)
+if not SUPABASE_SERVICE_KEY:
+    raise RuntimeError(
+        "Set SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_KEY) in .env"
+    )
 
 LIVE_UPDATE_PERIOD_S = 1.0     # throttle live UPDATE to this rate
 LOAD_THRESHOLD_G     = 100.0   # above this = something is on it
