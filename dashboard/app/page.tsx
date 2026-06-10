@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase, supabaseConfigured } from "../lib/supabase";
 
 type Live = {
   weight_g: number;
@@ -76,6 +76,24 @@ export default function Page() {
       <h1 style={{ fontSize: 18, color: "#666", letterSpacing: 1, margin: 0 }}>
         CTRL WEIGHT — LIVE
       </h1>
+      {!supabaseConfigured && (
+        <div
+          style={{
+            marginTop: "1rem",
+            padding: "0.75rem 1rem",
+            background: "#3a2a00",
+            border: "1px solid #6b4a00",
+            borderRadius: 6,
+            color: "#ffd07a",
+            fontSize: 13,
+          }}
+        >
+          Supabase env vars not set. Add{" "}
+          <code>NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
+          <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in Vercel project settings
+          and redeploy.
+        </div>
+      )}
 
       <div style={{ textAlign: "center", margin: "3rem 0" }}>
         <div
