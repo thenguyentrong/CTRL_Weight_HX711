@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { supabase, supabaseConfigured } from "../lib/supabase";
-import WeightChart from "./WeightChart";
+import WeightChart, { type ExternalRange } from "./WeightChart";
+import RecordPanel from "./RecordPanel";
+import RecordingsList, { type Recording } from "./RecordingsList";
 
 type Live = {
   weight_g: number;
@@ -22,6 +24,7 @@ type Weighing = {
 export default function Page() {
   const [live, setLive] = useState<Live | null>(null);
   const [weighings, setWeighings] = useState<Weighing[]>([]);
+  const [viewRange, setViewRange] = useState<ExternalRange>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -142,7 +145,22 @@ export default function Page() {
         ))}
       </div>
 
-      <WeightChart />
+      <RecordPanel />
+
+      <WeightChart
+        externalRange={viewRange}
+        onClearExternal={() => setViewRange(null)}
+      />
+
+      <RecordingsList
+        onView={(r: Recording) =>
+          setViewRange({
+            from: new Date(r.started_at),
+            to: r.stopped_at ? new Date(r.stopped_at) : new Date(),
+            label: r.name || `recording #${r.id}`,
+          })
+        }
+      />
 
       <h2
         style={{

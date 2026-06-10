@@ -38,7 +38,15 @@ function toLocalInputValue(d: Date): string {
   );
 }
 
-export default function WeightChart() {
+export type ExternalRange = { from: Date; to: Date; label: string } | null;
+
+export default function WeightChart({
+  externalRange,
+  onClearExternal,
+}: {
+  externalRange?: ExternalRange;
+  onClearExternal?: () => void;
+} = {}) {
   const [range, setRange] = useState<RangeKey>("1h");
   const now = useMemo(() => new Date(), []);
   const [customFrom, setCustomFrom] = useState(
@@ -50,19 +58,22 @@ export default function WeightChart() {
   const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
-  // auto-refresh the live ranges every 10 s
+  // auto-refresh the live ranges every 10 s (skip when external range is pinned)
   useEffect(() => {
-    if (range === "custom") return;
+    if (externalRange || range === "custom") return;
     const id = setInterval(() => setTick((t) => t + 1), 10_000);
     return () => clearInterval(id);
-  }, [range]);
+  }, [range, externalRange]);
 
   useEffect(() => {
     let cancelled = false;
 
     let from: Date;
     let to: Date;
-    if (range === "custom") {
+    if (externalRange) {
+      from = externalRange.from;
+      to = externalRange.to;
+    } else if (range === "custom") {
       if (!customFrom || !customTo) return;
       from = new Date(customFrom);
       to = new Date(customTo);
@@ -91,7 +102,7 @@ export default function WeightChart() {
     return () => {
       cancelled = true;
     };
-  }, [range, customFrom, customTo, tick]);
+  }, [range, customFrom, customTo, tick, externalRange]);
 
   const chartData = useMemo(
     () =>
@@ -124,6 +135,14 @@ export default function WeightChart() {
         }}
       >
         WEIGHT OVER TIME
+        {externalRange && (
+          <span style={{ marginLeft: "0.75rem", color: "#7adfff" }}>
+            · viewing: {externalRange.label}{" "}
+            <button onClick={onClearExternal} style={clearBtn}>
+              ← back to live
+            </button>
+          </span>
+        )}
       </h2>
 
       <div
@@ -133,6 +152,8 @@ export default function WeightChart() {
           flexWrap: "wrap",
           alignItems: "center",
           marginBottom: "1rem",
+          opacity: externalRange ? 0.4 : 1,
+          pointerEvents: externalRange ? "none" : "auto",
         }}
       >
         {QUICK.map((q) => (
@@ -277,4 +298,15 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 4,
   padding: "0.3rem 0.5rem",
   fontSize: 12,
+};
+
+const clearBtn: React.CSSProperties = {
+  background: "transparent",
+  color: "#7adfff",
+  border: "1px solid #2a3f4a",
+  borderRadius: 4,
+  padding: "0.15rem 0.5rem",
+  fontSize: 11,
+  cursor: "pointer",
+  marginLeft: "0.5rem",
 };

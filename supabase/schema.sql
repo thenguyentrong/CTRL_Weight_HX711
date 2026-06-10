@@ -31,15 +31,32 @@ create table readings (
 );
 create index readings_recorded_at_idx on readings (recorded_at desc);
 
--- 4) Realtime publication (chart re-queries on range change, so readings stays off).
+-- 4) `recordings` is a named (started_at, stopped_at) bookmark over the readings log.
+-- The bridge does not touch this — the dashboard writes via the anon key.
+create table recordings (
+  id          bigserial primary key,
+  name        text,
+  notes       text,
+  started_at  timestamptz not null default now(),
+  stopped_at  timestamptz
+);
+create index recordings_started_at_idx on recordings (started_at desc);
+
+-- 5) Realtime publication for the things the dashboard cares about.
 alter publication supabase_realtime add table live;
 alter publication supabase_realtime add table weighings;
+alter publication supabase_realtime add table recordings;
 
--- 5) RLS: anon can read, writes only from the bridge (service-role key).
-alter table live      enable row level security;
-alter table weighings enable row level security;
-alter table readings  enable row level security;
+-- 6) RLS.
+alter table live       enable row level security;
+alter table weighings  enable row level security;
+alter table readings   enable row level security;
+alter table recordings enable row level security;
 
-create policy "anon read live"      on live      for select using (true);
-create policy "anon read weighings" on weighings for select using (true);
-create policy "anon read readings"  on readings  for select using (true);
+create policy "anon read live"        on live       for select using (true);
+create policy "anon read weighings"   on weighings  for select using (true);
+create policy "anon read readings"    on readings   for select using (true);
+create policy "anon read recordings"  on recordings for select using (true);
+create policy "anon insert recordings" on recordings for insert with check (true);
+create policy "anon update recordings" on recordings for update using (true);
+create policy "anon delete recordings" on recordings for delete using (true);
