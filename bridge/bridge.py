@@ -45,11 +45,12 @@ if not SUPABASE_SERVICE_KEY:
         "Set SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_KEY) in .env"
     )
 
-LIVE_UPDATE_PERIOD_S = 1.0     # throttle live UPDATE to this rate
-LOAD_THRESHOLD_G     = 100.0   # above this = something is on it
-UNLOAD_THRESHOLD_G   = 50.0    # below this = cleared
-STABLE_BAND_G        = 10.0    # must stay inside this band
-STABLE_TIME_S        = 1.5     # for this long, to count as stable
+LIVE_UPDATE_PERIOD_S    = 1.0   # throttle live UPDATE to this rate
+READINGS_INSERT_PERIOD_S = 1.0  # also append one history row per N seconds
+LOAD_THRESHOLD_G        = 100.0 # above this = something is on it
+UNLOAD_THRESHOLD_G      = 50.0  # below this = cleared
+STABLE_BAND_G           = 10.0  # must stay inside this band
+STABLE_TIME_S           = 1.5   # for this long, to count as stable
 
 # ---------- parsing ----------
 LINE_RE = re.compile(
@@ -121,6 +122,7 @@ def main() -> None:
     sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     detector = EventDetector()
     last_live = 0.0
+    last_reading = 0.0
 
     while True:
         try:
@@ -168,6 +170,16 @@ def main() -> None:
                         sb.table("live").update(payload).eq("id", 1).execute()
                     except Exception as exc:
                         print(f"  live update failed: {exc}")
+
+                # throttled history append (time-series log)
+                if now - last_reading >= READINGS_INSERT_PERIOD_S:
+                    last_reading = now
+                    try:
+                        sb.table("readings").insert(
+                            {"weight_g": float(reading.total_g)}
+                        ).execute()
+                    except Exception as exc:
+                        print(f"  readings insert failed: {exc}")
 
         except (serial.SerialException, OSError) as exc:
             print(f"Serial error: {exc} — reconnecting in 3 s...")

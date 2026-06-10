@@ -23,16 +23,23 @@ create table weighings (
 );
 create index weighings_captured_at_idx on weighings (captured_at desc);
 
--- 3) Realtime publication for both tables.
+-- 3) `readings` is the full time-series log (~1 row/second) used for charting.
+create table readings (
+  id           bigserial primary key,
+  weight_g     real not null,
+  recorded_at  timestamptz not null default now()
+);
+create index readings_recorded_at_idx on readings (recorded_at desc);
+
+-- 4) Realtime publication (chart re-queries on range change, so readings stays off).
 alter publication supabase_realtime add table live;
 alter publication supabase_realtime add table weighings;
 
--- 4) RLS: anon can read, but writes only from the bridge (service-role key).
+-- 5) RLS: anon can read, writes only from the bridge (service-role key).
 alter table live      enable row level security;
 alter table weighings enable row level security;
+alter table readings  enable row level security;
 
-create policy "anon read live"
-  on live for select using (true);
-
-create policy "anon read weighings"
-  on weighings for select using (true);
+create policy "anon read live"      on live      for select using (true);
+create policy "anon read weighings" on weighings for select using (true);
+create policy "anon read readings"  on readings  for select using (true);

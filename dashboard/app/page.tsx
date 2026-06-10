@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase, supabaseConfigured } from "../lib/supabase";
+import WeightChart from "./WeightChart";
 
 type Live = {
   weight_g: number;
@@ -141,11 +142,14 @@ export default function Page() {
         ))}
       </div>
 
+      <WeightChart />
+
       <h2
         style={{
           fontSize: 12,
           color: "#666",
           letterSpacing: 1,
+          marginTop: "3rem",
           marginBottom: "0.5rem",
         }}
       >
